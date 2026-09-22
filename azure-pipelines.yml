@@ -1,0 +1,42 @@
+# Azure DevOps pipeline: build, test, and publish deployable artifacts for the API and the Function.
+trigger:
+  branches:
+    include: [ main ]
+
+pool:
+  vmImage: ubuntu-latest
+
+variables:
+  buildConfiguration: Release
+
+steps:
+  - task: UseDotNet@2
+    displayName: Install .NET 8 SDK
+    inputs:
+      packageType: sdk
+      version: 8.0.x
+
+  - script: dotnet build InspectionTrack.sln --configuration $(buildConfiguration)
+    displayName: Build
+
+  - script: dotnet test InspectionTrack.sln --configuration $(buildConfiguration) --no-build --logger trx
+    displayName: Test
+
+  - task: PublishTestResults@2
+    displayName: Publish test results
+    condition: always()
+    inputs:
+      testResultsFormat: VSTest
+      testResultsFiles: '**/*.trx'
+
+  - script: dotnet publish src/InspectionTrack.Api/InspectionTrack.Api.csproj --configuration $(buildConfiguration) --output $(Build.ArtifactStagingDirectory)/api
+    displayName: Publish API
+
+  - script: dotnet publish src/InspectionTrack.Functions/InspectionTrack.Functions.csproj --configuration $(buildConfiguration) --output $(Build.ArtifactStagingDirectory)/functions
+    displayName: Publish Function
+
+  - task: PublishBuildArtifacts@1
+    displayName: Upload artifacts
+    inputs:
+      PathtoPublish: $(Build.ArtifactStagingDirectory)
+      ArtifactName: drop

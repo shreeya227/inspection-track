@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>InspectionTrack — Risk Recommendation Tracker</title>
+  <style>
+    :root {
+      --bg: #f6f7f9; --panel: #ffffff; --ink: #1c2430; --muted: #5d6b7c; --line: #e2e6ec;
+      --critical: #b42318; --high: #c4540a; --medium: #a37a00; --low: #3b6e8f; --ok: #1f7a4d; --accent: #1d4ed8;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; background: var(--bg); color: var(--ink); }
+    header { background: var(--ink); color: #fff; padding: 18px 28px; }
+    header h1 { margin: 0; font-size: 20px; }
+    header p { margin: 2px 0 0; color: #aeb8c6; font-size: 13px; }
+    main { max-width: 1180px; margin: 0 auto; padding: 24px 28px 48px; }
+    .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 14px; margin-bottom: 26px; }
+    .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; }
+    .card .label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .05em; }
+    .card .value { font-size: 26px; font-weight: 650; margin-top: 4px; }
+    .card.alert .value { color: var(--critical); }
+    .layout { display: grid; grid-template-columns: 300px 1fr; gap: 20px; }
+    @media (max-width: 860px) { .layout { grid-template-columns: 1fr; } }
+    section { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px 18px; }
+    h2 { font-size: 15px; margin: 0 0 12px; }
+    .site { padding: 10px 12px; border-radius: 8px; cursor: pointer; border: 1px solid transparent; }
+    .site:hover { background: #f1f4f8; }
+    .site.active { border-color: var(--accent); background: #eef3ff; }
+    .site .name { font-weight: 600; }
+    .site .meta { color: var(--muted); font-size: 13px; }
+    .pill { display: inline-block; font-size: 12px; padding: 1px 8px; border-radius: 999px; font-weight: 600; }
+    .p-Critical { background: #fde8e7; color: var(--critical); }
+    .p-High { background: #fdeee2; color: var(--high); }
+    .p-Medium { background: #fbf3d9; color: var(--medium); }
+    .p-Low { background: #e6f0f6; color: var(--low); }
+    .overdue { background: #fde8e7; color: var(--critical); }
+    .done { background: #e3f3ea; color: var(--ok); }
+    table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    th { text-align: left; color: var(--muted); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; padding: 8px 6px; border-bottom: 1px solid var(--line); }
+    td { padding: 10px 6px; border-bottom: 1px solid var(--line); vertical-align: top; }
+    td .desc { color: var(--muted); font-size: 13px; }
+    select, button { font: inherit; font-size: 13px; padding: 4px 8px; border-radius: 6px; border: 1px solid var(--line); background: #fff; }
+    button { cursor: pointer; }
+    .empty { color: var(--muted); padding: 18px 0; }
+    .overdue-list li { margin-bottom: 6px; }
+    #toast { position: fixed; bottom: 20px; right: 20px; background: var(--ink); color: #fff; padding: 10px 14px; border-radius: 8px; display: none; max-width: 360px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>InspectionTrack</h1>
+    <p>Tracking loss-prevention recommendations from site inspection to closure</p>
+  </header>
+
+  <main>
+    <div class="cards" id="cards"></div>
+
+    <div class="layout">
+      <section>
+        <h2>Sites</h2>
+        <div id="sites"></div>
+        <h2 style="margin-top:22px">Most overdue</h2>
+        <ol class="overdue-list" id="overdue"></ol>
+      </section>
+
+      <section>
+        <h2 id="recs-title">Select a site</h2>
+        <div id="recs"><p class="empty">Choose a site to see its recommendations.</p></div>
+      </section>
+    </div>
+  </main>
+
+  <div id="toast"></div>
+
+  <script>
+    // Everything rendered from the API is escaped first: recommendation text is user input.
+    const esc = (value) => String(value ?? "").replace(/[&<>"']/g,
+      (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+    const money = (n) => n == null ? "—" : Number(n).toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 });
+    const label = (status) => status === "InProgress" ? "In progress" : status;
+
+    // Mirrors the server rules so the UI only offers valid moves; the server still enforces them.
+    const nextStates = {
+      Open: ["InProgress", "Declined"],
+      InProgress: ["Completed", "Open", "Declined"],
+      Completed: [],
+      Declined: ["Open"]
+    };
+
+    let selectedSite = null;
+
+    function toast(message) {
+      const el = document.getElementById("toast");
+      el.textContent = message;
+      el.style.display = "block";
+      clearTimeout(toast.timer);
+      toast.timer = setTimeout(() => (el.style.display = "none"), 3500);
+    }
+
+    async function getJson(url) {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+      return res.json();
+    }
+
+    async function loadDashboard() {
+      const d = await getJson("/api/dashboard");
+      document.getElementById("cards").innerHTML = `
+        <div class="card"><div class="label">Active</div><div class="value">${d.activeCount}</div></div>
+        <div class="card alert"><div class="label">Overdue</div><div class="value">${d.overdueCount}</div></div>
+        <div class="card"><div class="label">Critical open</div><div class="value">${d.activeByPriority.Critical ?? 0}</div></div>
+        <div class="card"><div class="label">Est. cost outstanding</div><div class="value">${money(d.activeEstimatedCost)}</div></div>`;
+
+      document.getElementById("overdue").innerHTML = d.mostOverdue.length
+        ? d.mostOverdue.map((o) => `<li><strong>${esc(o.title)}</strong><br>
+            <span class="pill p-${esc(o.priority)}">${esc(o.priority)}</span>
+            <span style="color:var(--muted);font-size:13px"> ${esc(o.siteName)} · ${o.daysOverdue} days overdue</span></li>`).join("")
+        : `<p class="empty">Nothing overdue.</p>`;
+    }
+
+    async function loadSites() {
+      const sites = await getJson("/api/sites");
+      document.getElementById("sites").innerHTML = sites.map((s) => `
+        <div class="site ${s.id === selectedSite?.id ? "active" : ""}" data-id="${s.id}">
+          <div class="name">${esc(s.name)}</div>
+          <div class="meta">${esc(s.clientName)} · ${s.activeCount} active${s.overdueCount ? ` · <span style="color:var(--critical)">${s.overdueCount} overdue</span>` : ""}</div>
+        </div>`).join("");
+
+      document.querySelectorAll(".site").forEach((el) =>
+        el.addEventListener("click", () => selectSite(sites.find((s) => s.id === Number(el.dataset.id)))));
+    }
+
+    async function selectSite(site) {
+      selectedSite = site;
+      document.getElementById("recs-title").textContent = site.name;
+      await loadSites();
+      const recs = await getJson(`/api/sites/${site.id}/recommendations`);
+
+      document.getElementById("recs").innerHTML = recs.length ? `
+        <table>
+          <thead><tr><th>Recommendation</th><th>Priority</th><th>Due</th><th>Est. cost</th><th>Status</th></tr></thead>
+          <tbody>${recs.map(row).join("")}</tbody>
+        </table>` : `<p class="empty">No recommendations for this site yet.</p>`;
+
+      document.querySelectorAll("select[data-id]").forEach((sel) =>
+        sel.addEventListener("change", () => changeStatus(Number(sel.dataset.id), sel.value, sel)));
+    }
+
+    function row(r) {
+      const badge = r.isOverdue ? `<span class="pill overdue">Overdue</span>`
+        : r.status === "Completed" ? `<span class="pill done">Completed</span>` : "";
+      const options = nextStates[r.status];
+      const control = options.length
+        ? `<select data-id="${r.id}"><option value="">${label(r.status)}…</option>${options.map((s) => `<option value="${s}">Move to ${label(s)}</option>`).join("")}</select>`
+        : `<span>${label(r.status)}</span>`;
+      return `<tr>
+        <td><strong>${esc(r.title)}</strong> ${badge}<div class="desc">${esc(r.description)}</div></td>
+        <td><span class="pill p-${esc(r.priority)}">${esc(r.priority)}</span></td>
+        <td>${esc(r.dueOn)}</td>
+        <td>${money(r.estimatedCost)}</td>
+        <td>${control}</td>
+      </tr>`;
+    }
+
+    async function changeStatus(id, status, select) {
+      if (!status) return;
+      let note = null;
+      if (status === "Completed" || status === "Declined") {
+        note = prompt(status === "Completed"
+          ? "Describe the evidence of completion (e.g. contractor sign-off, photos):"
+          : "Why is the client declining this recommendation?");
+        if (!note) { select.value = ""; return; }
+      }
+      const updatedBy = prompt("Your name, for the audit trail:");
+      if (!updatedBy) { select.value = ""; return; }
+
+      const res = await fetch(`/api/recommendations/${id}/status`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status, note, updatedBy })
+      });
+
+      if (res.ok) {
+        toast(`Moved to ${label(status)}.`);
+      } else {
+        const body = await res.json().catch(() => ({}));
+        toast(body.error ?? `Update failed (${res.status}).`);
+      }
+      await refresh();
+    }
+
+    async function refresh() {
+      try {
+        await loadDashboard();
+        if (selectedSite) await selectSite(selectedSite); else await loadSites();
+      } catch (err) {
+        toast(`Could not load data: ${err.message}`);
+      }
+    }
+
+    refresh();
+  </script>
+</body>
+</html>
