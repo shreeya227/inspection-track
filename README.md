@@ -93,27 +93,7 @@ curl -X POST http://localhost:5080/api/admin/sweep
 
 To run the Azure Function locally, copy `src/InspectionTrack.Functions/local.settings.json.example` to `local.settings.json` and start it with the Azure Functions Core Tools (`func start`).
 
-## API
 
-| Method | Route | Purpose |
-|---|---|---|
-| GET | `/api/sites` | Sites with active and overdue counts |
-| POST | `/api/sites` | Create a site |
-| GET | `/api/sites/{id}/recommendations` | Recommendations for a site, overdue first |
-| POST | `/api/sites/{id}/recommendations` | Issue a recommendation |
-| POST | `/api/recommendations/{id}/status` | Move a recommendation through the workflow |
-| GET | `/api/recommendations/{id}/history` | Audit trail |
-| GET | `/api/dashboard` | Portfolio summary |
-| POST | `/api/admin/sweep` | Run the overdue check now |
-| GET | `/health` | Health check including database connectivity |
-
-Example:
-
-```bash
-curl -X POST http://localhost:5080/api/recommendations/1/status \
-  -H "Content-Type: application/json" \
-  -d '{"status":"InProgress","updatedBy":"J. Rivera"}'
-```
 
 ## Deploying to Azure
 
@@ -181,6 +161,6 @@ The same code runs against SQLite on a laptop and Azure SQL in the cloud. The sw
 - Email or Teams notifications when a recommendation becomes overdue.
 - Infrastructure as code with Bicep instead of CLI commands.
 
----
 
-*Portfolio project. Sites and clients in the demo data are fictional.*
+
+
